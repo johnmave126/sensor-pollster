@@ -71,7 +71,7 @@ fn get_central(manager: &Manager) -> Result<Adapter, Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn get_central(manager: &Manager) -> Result<ConnectedAdapter> {
+fn get_central(manager: &Manager) -> Result<ConnectedAdapter, Error> {
     let adapters = manager.adapters()?;
     let adapter = adapters
         .into_iter()
