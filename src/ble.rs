@@ -76,8 +76,8 @@ fn get_central(manager: &Manager) -> Result<ConnectedAdapter, Error> {
     let adapter = adapters
         .into_iter()
         .nth(0)
-        .map_or(Err(Error::NoAdapter), |adapter| Ok(adapter));
-    adapter.connect()
+        .map_or(Err(Error::NoAdapter), |adapter| Ok(adapter))?;
+    Ok(adapter.connect()?)
 }
 
 fn calculate_backoff_intervals(min: u16, max: u16, max_step: u16) -> Vec<u64> {
