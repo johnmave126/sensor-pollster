@@ -4,10 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 
 #[inline]
-fn default_db_tname() -> String {
-    "sensor_pollster_reports".to_string()
-}
-#[inline]
 fn default_poll_period() -> u64 {
     300
 }
@@ -38,10 +34,6 @@ pub(crate) struct Config {
     // The database connect string
     // required
     pub db_string: String,
-    // The database table name
-    // optional, default: sensor_pollster_reports
-    #[serde(default = "default_db_tname")]
-    pub db_tname: String,
     // Polling period for sensors in seconds
     // optional, default: 300 (5 min)
     #[serde(default = "default_poll_period")]
