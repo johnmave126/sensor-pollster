@@ -13,11 +13,11 @@ keywords  = ["bluetooth", "ble"]
 
 [dependencies]
 btleplug = "0.5.4"
-thiserror = "1.0.21"
+thiserror = "1.0.22"
 ctrlc = { version = "3.1.7", features = ["termination"] }
 serde = "1.0.117"
-serde_yaml = "0.8.13"
-tokio = { version = "0.3.3", features = ["sync", "rt", "rt-multi-thread", "stream", "macros"] }
+serde_yaml = "0.8.14"
+tokio = { version = "0.3.3", features = ["sync", "rt", "rt-multi-thread", "stream", "macros", "time"] }
 tokio-postgres = { version = "0.6.0", features = ["with-chrono-0_4", "with-eui48-0_4"] }
 clap = "2.33.3"
 indoc = "1.0.3"
@@ -25,6 +25,7 @@ log = "0.4.11"
 env_logger = "0.8.1"
 anyhow = "1.0.34"
 serde_with = "1.5.1"
-futures = "0.3.7"
-chrono = "0.4"
+futures = "0.3.8"
+chrono = "0.4.19"
 eui48 = "0.4"
+rand = "0.7.3"

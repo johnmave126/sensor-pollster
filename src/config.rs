@@ -8,28 +8,12 @@ fn default_poll_period() -> u64 {
     300
 }
 #[inline]
-fn default_scan_period() -> u64 {
-    300
-}
-#[inline]
-fn default_scan_duration() -> u64 {
-    60
-}
-#[inline]
-fn default_retry_min() -> u16 {
-    10
-}
-#[inline]
-fn default_retry_max() -> u16 {
-    600
-}
-#[inline]
-fn default_retry_backoff() -> u16 {
-    10
+fn default_retry() -> usize {
+    1
 }
 
 #[serde_as]
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct Config {
     // The database connect string
     // required
@@ -38,27 +22,10 @@ pub(crate) struct Config {
     // optional, default: 300 (5 min)
     #[serde(default = "default_poll_period")]
     pub poll_period: u64,
-    // Scaning period for device discovery in seconds
-    // optional, default: 300 (5 min)
-    #[serde(default = "default_scan_period")]
-    pub scan_period: u64,
-    // Scanning duration for each scanning in seconds
-    // optional, default: 60 (1 min)
-    #[serde(default = "default_scan_duration")]
-    pub scan_duration: u64,
-    // Smallest interval for reconnection in seconds
-    // optional, default: 10
-    #[serde(default = "default_retry_min")]
-    pub retry_min: u16,
-    // Largest interval for reconnection in seconds
-    // optional, default: 600 (10 min)
-    #[serde(default = "default_retry_max")]
-    pub retry_max: u16,
-    // Max number of retry before hitting maximum reconnection interval
-    // The backoff multiplier will be automatically calculated
-    // optional, default: 10
-    #[serde(default = "default_retry_backoff")]
-    pub retry_backoff: u16,
+    // Number of retry when a connection fails
+    // optional, default: 1
+    #[serde(default = "default_retry")]
+    pub retry: usize,
     // List of sensor MAC addresses to monitor
     #[serde_as(as = "HashMap<DisplayFromStr, _>")]
     pub devices: HashMap<btleplug::api::BDAddr, String>,
