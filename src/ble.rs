@@ -242,8 +242,13 @@ fn device_connect<P: 'static + Peripheral + Display, C: Central<P>>(
                 if device.is_connected() {
                     return;
                 }
-                if let Ok(_) = device.connect() {
-                    return;
+                match device.connect() {
+                    Ok(_) => {
+                        return;
+                    }
+                    Err(err) => {
+                        warn!("failed to connect to {}: {}", device, err);
+                    }
                 }
                 debug!("{}-th try to connect to {} failed", i, device);
                 std::thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(10, 50)));
