@@ -99,7 +99,7 @@ fn setup_device<P: Peripheral + Display>(
     sender: broadcast::Sender<DeviceResponse>,
     device: &P,
 ) -> Result<Characteristic, Error> {
-    debug!("setting up {}", device);
+    info!("setting up {}", device);
     let addr = device.address();
     let characteristics = device.discover_characteristics()?;
     let notify_service = characteristics
@@ -216,6 +216,7 @@ fn poll_device<P: 'static + Peripheral + Display>(
     device.command(&notify_service, "AT+BATT?".as_bytes())?;
     std::thread::sleep(Duration::from_millis(5));
     device.command(&notify_service, "AT+RSSI?".as_bytes())?;
+    info!("device {} polling commands sent", device);
     // wait for all response, or timeout after 5s
     let timeout_task = timeout(
         Duration::from_secs(5),
@@ -224,8 +225,8 @@ fn poll_device<P: 'static + Peripheral + Display>(
     if let Err(_) = block_on(timeout_task) {
         warn!("device {} doesn't finish polling in time", device);
     }
-    info!("device {} polled", device);
     device.disconnect()?;
+    info!("device {} polled", device);
 
     Ok(())
 }
@@ -238,10 +239,11 @@ fn device_connect<P: 'static + Peripheral + Display, C: Central<P>>(
     if let Some(device) = central.peripheral(*addr) {
         spawn_blocking(move || {
             debug!("connecting to device {}", device);
+            if device.is_connected() {
+                // Reset device
+                let _ = device.disconnect();
+            }
             for i in 0..retry + 1 {
-                if device.is_connected() {
-                    return;
-                }
                 match device.connect() {
                     Ok(_) => {
                         return;
@@ -274,10 +276,12 @@ async fn device_handler<P: 'static + Peripheral + Display, C: Central<P>>(
         debug!("device {} receives request {:?}", addr, message);
         match message {
             DeviceMessage::Poll => {
+                info!("prepare to connect to {}", addr);
                 device_connect(&central, &addr, retry);
             }
             DeviceMessage::Connected => {
                 if let Some(device) = central.peripheral(addr) {
+                    info!("prepare to poll {}", device);
                     let address = device.address();
                     let bus_sender_2 = bus_sender.clone();
                     spawn_blocking(move || {
@@ -318,17 +322,16 @@ async fn poll_ble_devices(
             match event {
                 CentralEvent::DeviceDiscovered(addr) => {
                     debug!("device discovered: {}", addr);
-                    //let _ = bus_sender_2.blocking_send(BusMessage::Discovered(addr));
                 }
                 CentralEvent::DeviceConnected(addr) => {
-                    debug!("device connected: {}", addr);
+                    info!("device connected: {}", addr);
                     let _ = bus_sender_2.blocking_send(BusMessage::Connected(addr));
                 }
                 CentralEvent::DeviceLost(addr) => {
                     debug!("device lost: {}", addr);
                 }
                 CentralEvent::DeviceDisconnected(addr) => {
-                    debug!("device disconnected: {}", addr);
+                    info!("device disconnected: {}", addr);
                 }
                 _ => (),
             }
@@ -376,7 +379,7 @@ async fn poll_ble_devices(
             }
             BusMessage::Poll => {
                 // Prune polls that exits
-                debug!("issuing poll request to all devices");
+                info!("issuing poll request to all devices");
                 devices.retain(|_, (sender, _)| !sender.is_closed());
                 for (_, (device_sender, _)) in devices.iter() {
                     let _ = device_sender.send(DeviceMessage::Poll).await;
