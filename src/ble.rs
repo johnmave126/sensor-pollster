@@ -285,7 +285,7 @@ async fn device_handler<P: 'static + Peripheral + Display, C: Central<P>>(
                     let bus_sender_2 = bus_sender.clone();
                     spawn_blocking(move || {
                         std::thread::sleep(Duration::from_millis(10));
-                        poll_device(device, bus_sender_2)
+                        let _ = poll_device(device.clone(), bus_sender_2)
                             .pipe_log(|| format!("failed to poll device {}", address));
                         // Make sure the device is always disconnected after polling
                         let _ = device.disconnect();
