@@ -33,8 +33,10 @@ enum Error {
     Channel(#[from] sync::broadcast::error::RecvError),
     #[error("cannot find bluetooth adapter")]
     NoAdapter,
-    #[error("Device is not a HM device")]
+    #[error("device is not a HM device")]
     NotHMDevice,
+    #[error("device disconnects before performing operation")]
+    PreemptDisconnect,
 }
 
 impl From<btleplug::Error> for Error {

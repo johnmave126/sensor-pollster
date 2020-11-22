@@ -69,9 +69,12 @@ impl<T, E: Display> LogError for Result<T, E> {
 }
 
 // 0000ffe1-0000-1000-8000-00805f9b34fb
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const UUID_NOTIFY: UUID = UUID::B128([
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xe1, 0xff, 0x00, 0x00,
 ]);
+#[cfg(target_os = "linux")]
+const UUID_NOTIFY: UUID = UUID::B16([0xe1, 0xff]);
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn get_central(manager: &Manager) -> Result<Adapter, Error> {
@@ -156,6 +159,10 @@ fn poll_device<P: 'static + Peripheral + Display>(
         bus_sender: mpsc::Sender<BusMessage>,
         receiver: broadcast::Receiver<DeviceResponse>,
     ) -> Result<(), Error> {
+        if !device.is_connected() {
+            return Err(Error::PreemptDisconnect);
+        }
+
         let address = device.address();
 
         let mut has_temp = false;
@@ -263,16 +270,13 @@ async fn device_handler<P: 'static + Peripheral + Display, C: Central<P>>(
             }
             DeviceMessage::Connected => {
                 if let Some(device) = central.peripheral(addr) {
-                    if device.is_connected() {
-                        let address = device.address();
-                        let bus_sender_2 = bus_sender.clone();
-                        spawn_blocking(move || {
-                            poll_device(device, bus_sender_2)
-                                .pipe_log(|| format!("failed to poll device {}", address))
-                        });
-                    } else {
-                        warn!("device {} disconnected before performing operation", addr);
-                    }
+                    let address = device.address();
+                    let bus_sender_2 = bus_sender.clone();
+                    spawn_blocking(move || {
+                        std::thread::sleep(Duration::from_millis(10));
+                        poll_device(device, bus_sender_2)
+                            .pipe_log(|| format!("failed to poll device {}", address))
+                    });
                 } else {
                     warn!("device {} lost before performing operation", addr);
                 }
@@ -301,7 +305,7 @@ async fn poll_ble_devices(
     let ble_event_receiver = central.event_receiver().unwrap();
 
     let bus_sender_2 = bus_sender.clone();
-    let ble_bus_task = spawn_blocking(move || {
+    spawn_blocking(move || {
         while let Ok(event) = ble_event_receiver.recv() {
             match event {
                 CentralEvent::DeviceDiscovered(addr) => {
@@ -342,7 +346,7 @@ async fn poll_ble_devices(
 
     let bus_sender_2 = bus_sender.clone();
     let poll_period = config.poll_period;
-    let period_poll_task = spawn(async move {
+    let _period_poll_task = spawn(async move {
         // Give it 10 seconds to start up scanning
         let mut interval = interval_at(
             Instant::now() + Duration::from_secs(10),
