@@ -82,7 +82,7 @@ fn get_central(manager: &Manager) -> Result<Adapter, Error> {
     adapters
         .into_iter()
         .nth(0)
-        .map_or(Err(Error::NoAdapter), |adapter| Ok(adapter))
+        .map_or(Err(Error::NoAdapter), Result::Ok)
 }
 
 #[cfg(target_os = "linux")]
@@ -91,7 +91,7 @@ fn get_central(manager: &Manager) -> Result<ConnectedAdapter, Error> {
     let adapter = adapters
         .into_iter()
         .nth(0)
-        .map_or(Err(Error::NoAdapter), |adapter| Ok(adapter))?;
+        .map_or(Err(Error::NoAdapter), Result::Ok)?;
     Ok(adapter.connect()?)
 }
 
@@ -239,6 +239,9 @@ fn device_connect<P: 'static + Peripheral + Display, C: Central<P>>(
         spawn_blocking(move || {
             debug!("connecting to device {}", device);
             for i in 0..retry + 1 {
+                if device.is_connected() {
+                    return;
+                }
                 if let Ok(_) = device.connect() {
                     return;
                 }
@@ -346,7 +349,7 @@ async fn poll_ble_devices(
 
     let bus_sender_2 = bus_sender.clone();
     let poll_period = config.poll_period;
-    let _period_poll_task = spawn(async move {
+    spawn(async move {
         // Give it 10 seconds to start up scanning
         let mut interval = interval_at(
             Instant::now() + Duration::from_secs(10),
