@@ -225,7 +225,6 @@ fn poll_device<P: 'static + Peripheral + Display>(
     if let Err(_) = block_on(timeout_task) {
         warn!("device {} doesn't finish polling in time", device);
     }
-    device.disconnect()?;
     info!("device {} polled", device);
 
     Ok(())
@@ -287,7 +286,9 @@ async fn device_handler<P: 'static + Peripheral + Display, C: Central<P>>(
                     spawn_blocking(move || {
                         std::thread::sleep(Duration::from_millis(10));
                         poll_device(device, bus_sender_2)
-                            .pipe_log(|| format!("failed to poll device {}", address))
+                            .pipe_log(|| format!("failed to poll device {}", address));
+                        // Make sure the device is always disconnected after polling
+                        device.disconnect()?;
                     });
                 } else {
                     warn!("device {} lost before performing operation", addr);
