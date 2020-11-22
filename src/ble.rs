@@ -288,7 +288,7 @@ async fn device_handler<P: 'static + Peripheral + Display, C: Central<P>>(
                         poll_device(device, bus_sender_2)
                             .pipe_log(|| format!("failed to poll device {}", address));
                         // Make sure the device is always disconnected after polling
-                        device.disconnect()?;
+                        let _ = device.disconnect();
                     });
                 } else {
                     warn!("device {} lost before performing operation", addr);
