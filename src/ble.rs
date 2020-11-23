@@ -254,6 +254,8 @@ fn device_connect<P: 'static + Peripheral + Display, C: Central<P>>(
                 debug!("{}-th try to connect to {} failed", i, device);
                 std::thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(10, 50)));
             }
+            // Reset device just in case
+            let _ = device.disconnect();
             error!("failed to connect to device {}", device);
         });
     } else {
