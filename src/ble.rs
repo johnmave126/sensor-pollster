@@ -4,10 +4,7 @@ use crate::{
     Error,
 };
 
-use std::{
-    collections::{hash_map, HashMap},
-    fmt::Display,
-};
+use std::{collections::HashSet, fmt::Display};
 
 use btleplug::api::{
     BDAddr, Central, CentralEvent, Characteristic, Peripheral, ValueNotification, UUID,
@@ -31,19 +28,11 @@ use tokio::{
 
 #[derive(Debug)]
 enum BusMessage {
-    //Discovered(BDAddr),
     Connected(BDAddr),
     Poll,
     TemperatureUpdate(BDAddr, f32),
     BatteryUpdate(BDAddr, i8),
     RssiUpdate(BDAddr, i16),
-    Terminate,
-}
-
-#[derive(Debug)]
-enum DeviceMessage {
-    Poll,
-    Connected,
     Terminate,
 }
 
@@ -230,79 +219,6 @@ fn poll_device<P: 'static + Peripheral + Display>(
     Ok(())
 }
 
-fn device_connect<P: 'static + Peripheral + Display, C: Central<P>>(
-    central: &C,
-    addr: &BDAddr,
-    retry: usize,
-) {
-    if let Some(device) = central.peripheral(*addr) {
-        spawn_blocking(move || {
-            debug!("connecting to device {}", device);
-            if device.is_connected() {
-                // Reset device
-                let _ = device.disconnect();
-            }
-            for i in 0..retry + 1 {
-                match device.connect() {
-                    Ok(_) => {
-                        return;
-                    }
-                    Err(err) => {
-                        warn!("failed to connect to {}: {}", device, err);
-                    }
-                }
-                debug!("{}-th try to connect to {} failed", i, device);
-                std::thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(10, 50)));
-            }
-            // Reset device just in case
-            let _ = device.disconnect();
-            error!("failed to connect to device {}", device);
-        });
-    } else {
-        debug!(
-            "wanted to perform operation on device {}, not discovered yet",
-            addr
-        );
-    }
-}
-
-async fn device_handler<P: 'static + Peripheral + Display, C: Central<P>>(
-    central: C,
-    addr: BDAddr,
-    bus_sender: mpsc::Sender<BusMessage>,
-    mut receiver: mpsc::Receiver<DeviceMessage>,
-    retry: usize,
-) {
-    while let Some(message) = receiver.next().await {
-        debug!("device {} receives request {:?}", addr, message);
-        match message {
-            DeviceMessage::Poll => {
-                info!("prepare to connect to {}", addr);
-                device_connect(&central, &addr, retry);
-            }
-            DeviceMessage::Connected => {
-                if let Some(device) = central.peripheral(addr) {
-                    info!("prepare to poll {}", device);
-                    let address = device.address();
-                    let bus_sender_2 = bus_sender.clone();
-                    spawn_blocking(move || {
-                        std::thread::sleep(Duration::from_millis(10));
-                        let _ = poll_device(device.clone(), bus_sender_2)
-                            .pipe_log(|| format!("failed to poll device {}", address));
-                        // Make sure the device is always disconnected after polling
-                        let _ = device.disconnect();
-                    });
-                } else {
-                    warn!("device {} lost before performing operation", addr);
-                }
-            }
-            DeviceMessage::Terminate => {
-                break;
-            }
-        }
-    }
-}
-
 async fn poll_ble_devices(
     config: &Config,
     sender: mpsc::Sender<UpdateMessage>,
@@ -342,21 +258,7 @@ async fn poll_ble_devices(
     });
     central.start_scan()?;
 
-    let mut devices: HashMap<_, _> = config
-        .devices
-        .keys()
-        .map(|addr| {
-            let (sender, receiver) = mpsc::channel(16);
-            let task = spawn(device_handler(
-                central.clone(),
-                *addr,
-                bus_sender.clone(),
-                receiver,
-                config.retry,
-            ));
-            (*addr, (sender, task))
-        })
-        .collect();
+    let devices: HashSet<_> = config.devices.keys().cloned().collect();
 
     let bus_sender_2 = bus_sender.clone();
     let poll_period = config.poll_period;
@@ -372,20 +274,68 @@ async fn poll_ble_devices(
         }
     });
 
+    let bus_sender_2 = bus_sender.clone();
+    let central_2 = central.clone();
+    let (connect_sender, mut connect_receiver) = mpsc::channel(32);
+    let retry = config.retry;
+
+    let connector = spawn_blocking(move || {
+        while let Some(addr) = connect_receiver.blocking_recv() {
+            debug!("connect to device {}", addr);
+            if let Some(device) = central_2.peripheral(addr) {
+                let _ = device.disconnect();
+                for i in 0..retry + 1 {
+                    match device.connect() {
+                        Ok(_) => {
+                            return;
+                        }
+                        Err(btleplug::Error::Other(reason)) if reason.find("EBUSY").is_some() => {
+                            // EBUSY, need to restart the application
+                            error!("EBUSY encountered, terminating...");
+                            bus_sender_2.blocking_send(BusMessage::Terminate).unwrap();
+                        }
+                        Err(err) => {
+                            warn!("failed to connect to {}: {}", device, err);
+                        }
+                    }
+                    debug!("{}-th try to connect to {} failed", i, device);
+                    std::thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(10, 50)));
+                }
+                error!("failed to connect to device {}", device);
+            } else {
+                warn!("device {} lost before connecting", addr);
+            }
+        }
+    });
+
     while let Some(message) = bus_receiver.next().await {
         match message {
             BusMessage::Connected(addr) => {
-                if let hash_map::Entry::Occupied(entry) = devices.entry(addr) {
-                    let (device_sender, _) = entry.get();
-                    let _ = device_sender.send(DeviceMessage::Connected).await;
+                if devices.contains(&addr) {
+                    if let Some(device) = central.peripheral(addr) {
+                        info!("prepare to poll {}", device);
+                        let address = device.address();
+                        let bus_sender_2 = bus_sender.clone();
+                        spawn_blocking(move || {
+                            std::thread::sleep(Duration::from_millis(10));
+                            let _ = poll_device(device.clone(), bus_sender_2)
+                                .pipe_log(|| format!("failed to poll device {}", address));
+                            // Make sure the device is always disconnected after polling
+                            let _ = device.disconnect();
+                        });
+                    } else {
+                        warn!("device {} lost before performing operation", addr);
+                    }
                 }
             }
             BusMessage::Poll => {
                 // Prune polls that exits
                 info!("issuing poll request to all devices");
-                devices.retain(|_, (sender, _)| !sender.is_closed());
-                for (_, (device_sender, _)) in devices.iter() {
-                    let _ = device_sender.send(DeviceMessage::Poll).await;
+                for addr in devices.iter() {
+                    connect_sender
+                        .send(addr.clone())
+                        .await
+                        .expect("device connector unresponsable");
                 }
             }
             BusMessage::TemperatureUpdate(device, temperature) => {
@@ -417,29 +367,17 @@ async fn poll_ble_devices(
             }
             BusMessage::Terminate => {
                 debug!("terminate message received");
-                // Prune polls that exits
-                for (_, (device_sender, _)) in devices.iter() {
-                    let _ = device_sender.send(DeviceMessage::Terminate).await;
-                }
                 break;
             }
         }
     }
 
-    // Give 1s timeout before forcifully drop all the tasks
-    if let Err(_) = timeout(
-        Duration::from_secs(1),
-        spawn(async {
-            for (_, (_, task)) in devices {
-                let _ = task.await;
-            }
-        }),
-    )
-    .await
-    {
-        warn!("device handlers didn't finish in time");
-    }
     central.stop_scan()?;
+    drop(connect_sender);
+    drop(central);
+    connector
+        .await
+        .expect("fail to terminate connector gracefully");
     Ok(())
 }
 
