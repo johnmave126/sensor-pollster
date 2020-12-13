@@ -287,7 +287,7 @@ async fn poll_ble_devices(
                 for i in 0..retry + 1 {
                     match device.connect() {
                         Ok(_) => {
-                            return;
+                            break;
                         }
                         Err(btleplug::Error::Other(reason)) if reason.find("EBUSY").is_some() => {
                             // EBUSY, need to restart the application
