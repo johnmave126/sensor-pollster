@@ -300,8 +300,10 @@ async fn poll_ble_devices(
                     }
                     debug!("{}-th try to connect to {} failed", i, device);
                     std::thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(10, 50)));
+                    if i == retry {
+                        error!("failed to connect to device {}", device);
+                    }
                 }
-                error!("failed to connect to device {}", device);
             } else {
                 warn!("device {} lost before connecting", addr);
             }
