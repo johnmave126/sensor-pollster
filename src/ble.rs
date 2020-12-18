@@ -293,6 +293,7 @@ async fn poll_ble_devices(
                             // EBUSY, need to restart the application
                             error!("EBUSY encountered, terminating...");
                             bus_sender_2.blocking_send(BusMessage::Terminate).unwrap();
+                            return;
                         }
                         Err(err) => {
                             warn!("failed to connect to {}: {}", device, err);
@@ -374,6 +375,7 @@ async fn poll_ble_devices(
         }
     }
 
+    info!("polling stopping...");
     central.stop_scan()?;
     drop(connect_sender);
     drop(central);
