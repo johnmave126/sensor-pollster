@@ -34,6 +34,7 @@ enum BusMessage {
     BatteryUpdate(BDAddr, i8),
     RssiUpdate(BDAddr, i16),
     Terminate,
+    EBUSYTerminate,
 }
 
 #[derive(Debug, Clone)]
@@ -292,7 +293,9 @@ async fn poll_ble_devices(
                         Err(btleplug::Error::Other(reason)) if reason.find("EBUSY").is_some() => {
                             // EBUSY, need to restart the application
                             error!("EBUSY encountered, terminating...");
-                            bus_sender_2.blocking_send(BusMessage::Terminate).unwrap();
+                            bus_sender_2
+                                .blocking_send(BusMessage::EBUSYTerminate)
+                                .unwrap();
                             return;
                         }
                         Err(err) => {
@@ -371,6 +374,9 @@ async fn poll_ble_devices(
             BusMessage::Terminate => {
                 debug!("terminate message received");
                 break;
+            }
+            BusMessage::EBUSYTerminate => {
+                return Err(Error::Busy);
             }
         }
     }
