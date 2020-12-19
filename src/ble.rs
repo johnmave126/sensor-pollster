@@ -4,7 +4,7 @@ use crate::{
     Error,
 };
 
-use std::{collections::HashSet, fmt::Display};
+use std::{collections::HashSet, fmt::Display, thread::spawn as spawn_thread};
 
 use btleplug::api::{
     BDAddr, Central, CentralEvent, Characteristic, Peripheral, ValueNotification, UUID,
@@ -236,7 +236,7 @@ async fn poll_ble_devices(
     let ble_event_receiver = central.event_receiver().unwrap();
 
     let bus_sender_2 = bus_sender.clone();
-    spawn_blocking(move || {
+    spawn_thread(move || {
         while let Ok(event) = ble_event_receiver.recv() {
             match event {
                 CentralEvent::DeviceDiscovered(addr) => {
@@ -279,7 +279,7 @@ async fn poll_ble_devices(
     let (connect_sender, mut connect_receiver) = mpsc::channel(32);
     let retry = config.retry;
 
-    let connector = spawn_blocking(move || {
+    let connector = spawn_thread(move || {
         while let Some(addr) = connect_receiver.blocking_recv() {
             debug!("connect to device {}", addr);
             if let Some(device) = central_2.peripheral(addr) {
@@ -377,11 +377,14 @@ async fn poll_ble_devices(
 
     info!("polling stopping...");
     central.stop_scan()?;
+    info!("scanning stopped");
     drop(connect_sender);
+    info!("connect sender dropped");
     drop(central);
+    info!("central dropped");
     connector
-        .await
-        .expect("fail to terminate connector gracefully");
+        .join()
+        .expect("unable to terminate connecting thread");
     Ok(())
 }
 
