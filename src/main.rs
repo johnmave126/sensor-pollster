@@ -37,8 +37,8 @@ enum Error {
     NotHMDevice,
     #[error("device disconnects before performing operation")]
     PreemptDisconnect,
-    #[error("device is busy")]
-    Busy,
+    #[error("syscall failed with: {0}")]
+    SysError(String),
 }
 
 impl From<btleplug::Error> for Error {

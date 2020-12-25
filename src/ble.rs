@@ -34,7 +34,7 @@ enum BusMessage {
     BatteryUpdate(BDAddr, i8),
     RssiUpdate(BDAddr, i16),
     Terminate,
-    EBUSYTerminate,
+    ErrorTerminate(String),
 }
 
 #[derive(Debug, Clone)]
@@ -290,11 +290,10 @@ async fn poll_ble_devices(
                         Ok(_) => {
                             break;
                         }
-                        Err(btleplug::Error::Other(reason)) if reason.find("EBUSY").is_some() => {
-                            // EBUSY, need to restart the application
-                            error!("EBUSY encountered, terminating...");
+                        Err(btleplug::Error::Other(reason)) => {
+                            error!("syscall error encountered: {}", reason);
                             bus_sender_2
-                                .blocking_send(BusMessage::EBUSYTerminate)
+                                .blocking_send(BusMessage::ErrorTerminate(reason))
                                 .unwrap();
                             return;
                         }
@@ -375,8 +374,8 @@ async fn poll_ble_devices(
                 debug!("terminate message received");
                 break;
             }
-            BusMessage::EBUSYTerminate => {
-                return Err(Error::Busy);
+            BusMessage::ErrorTerminate(reason) => {
+                return Err(Error::SysError(reason));
             }
         }
     }
