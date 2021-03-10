@@ -7,7 +7,7 @@ use crate::{
 use std::{collections::HashSet, fmt::Display, thread::spawn as spawn_thread};
 
 use btleplug::api::{
-    BDAddr, Central, CentralEvent, Characteristic, Peripheral, ValueNotification, UUID,
+    BDAddr, Central, CentralEvent, Characteristic, Peripheral, ValueNotification, WriteType,
 };
 #[cfg(target_os = "linux")]
 use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
@@ -20,11 +20,13 @@ use futures::{executor::block_on, prelude::Future};
 use log::{debug, error, info, warn};
 use rand::Rng;
 use tokio::{
-    stream::StreamExt,
     sync::{broadcast, mpsc},
     task::{spawn, spawn_blocking},
     time::{interval_at, timeout, Duration, Instant},
 };
+use tokio_stream::StreamExt;
+
+use uuid::Uuid;
 
 #[derive(Debug)]
 enum BusMessage {
@@ -59,12 +61,10 @@ impl<T, E: Display> LogError for Result<T, E> {
 }
 
 // 0000ffe1-0000-1000-8000-00805f9b34fb
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-const UUID_NOTIFY: UUID = UUID::B128([
-    0xFB, 0x34, 0x9B, 0x5F, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xE1, 0xFF, 0x00, 0x00,
-]);
-#[cfg(target_os = "linux")]
-const UUID_NOTIFY: UUID = UUID::B16(0xFFE1);
+//#[cfg(any(target_os = "windows", target_os = "macos"))]
+const UUID_NOTIFY: Uuid = Uuid::from_u128(0x0000ffe1_0000_1000_8000_00805f9b34fb);
+//#[cfg(target_os = "linux")]
+//const UUID_NOTIFY: UUID = UUID::B16(0xFFE1);
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn get_central(manager: &Manager) -> Result<Adapter, Error> {
@@ -147,7 +147,7 @@ fn poll_device<P: 'static + Peripheral + Display>(
         device: P,
         notify_service: Characteristic,
         bus_sender: mpsc::Sender<BusMessage>,
-        receiver: broadcast::Receiver<DeviceResponse>,
+        mut receiver: broadcast::Receiver<DeviceResponse>,
     ) -> Result<(), Error> {
         if !device.is_connected() {
             return Err(Error::PreemptDisconnect);
@@ -159,15 +159,22 @@ fn poll_device<P: 'static + Peripheral + Display>(
         let mut has_batt = false;
         let mut has_rssi = false;
 
-        tokio::pin! {
-            let stream = receiver.into_stream().take_while(Result::is_ok).map(Result::unwrap);
-        }
+        let stream = async_stream::stream! {
+            while let Ok(item) = receiver.recv().await {
+                yield item;
+            }
+        };
+        tokio::pin!(stream);
 
         while let Some(message) = stream.next().await {
             match message {
                 DeviceResponse::TemperatureSkipped => {
                     // Ask for temperature again
-                    device.command(&notify_service, "AT+TEMP?".as_bytes())?;
+                    device.write(
+                        &notify_service,
+                        "AT+TEMP?".as_bytes(),
+                        WriteType::WithoutResponse,
+                    )?;
                 }
                 DeviceResponse::Temperature(temperature) => {
                     info!("device {} temperature polled: {}", device, temperature);
@@ -201,11 +208,23 @@ fn poll_device<P: 'static + Peripheral + Display>(
     let (value_sender, value_receiver) = broadcast::channel(16);
     let notify_service = setup_device(value_sender, &device)?;
 
-    device.command(&notify_service, "AT+TEMP?".as_bytes())?;
+    device.write(
+        &notify_service,
+        "AT+TEMP?".as_bytes(),
+        WriteType::WithoutResponse,
+    )?;
     std::thread::sleep(Duration::from_millis(5));
-    device.command(&notify_service, "AT+BATT?".as_bytes())?;
+    device.write(
+        &notify_service,
+        "AT+BATT?".as_bytes(),
+        WriteType::WithoutResponse,
+    )?;
     std::thread::sleep(Duration::from_millis(5));
-    device.command(&notify_service, "AT+RSSI?".as_bytes())?;
+    device.write(
+        &notify_service,
+        "AT+RSSI?".as_bytes(),
+        WriteType::WithoutResponse,
+    )?;
     info!("device {} polling commands sent", device);
     // wait for all response, or timeout after 5s
     let timeout_task = timeout(
@@ -223,13 +242,21 @@ fn poll_device<P: 'static + Peripheral + Display>(
 async fn poll_ble_devices(
     config: &Config,
     sender: mpsc::Sender<UpdateMessage>,
-    termination_receiver: broadcast::Receiver<()>,
+    mut termination_receiver: broadcast::Receiver<()>,
 ) -> Result<(), Error> {
-    let (bus_sender, bus_receiver) = mpsc::channel(64);
-    tokio::pin! {
-        let termination_receiver = termination_receiver.into_stream().take_while(Result::is_ok).map(|_| BusMessage::Terminate).take(1);
-    }
-    let mut bus_receiver = bus_receiver.merge(termination_receiver);
+    let (bus_sender, mut bus_receiver) = mpsc::channel(64);
+    let termination_receiver = async_stream::stream! {
+        if let Ok(_) = termination_receiver.recv().await {
+            yield BusMessage::Terminate;
+        }
+    };
+    let bus_receiver = async_stream::stream! {
+        while let Some(item) = bus_receiver.recv().await {
+            yield item;
+        }
+    };
+    let bus_receiver = bus_receiver.merge(termination_receiver);
+    tokio::pin!(bus_receiver);
 
     let manager = Manager::new()?;
     let central = get_central(&manager)?;
@@ -302,7 +329,7 @@ async fn poll_ble_devices(
                         }
                     }
                     debug!("{}-th try to connect to {} failed", i, device);
-                    std::thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(10, 50)));
+                    std::thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(10..50)));
                     if i == retry {
                         error!("failed to connect to device {}", device);
                     }

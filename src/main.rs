@@ -9,7 +9,7 @@ use crate::util::AttachContext;
 use std::{fs::File, io::BufReader};
 
 use anyhow::Context;
-use clap::{App, Arg};
+use clap::{crate_name, crate_version, App, Arg};
 use futures::future::try_join;
 use indoc::indoc;
 use log::{error, info, warn};
@@ -48,8 +48,8 @@ impl From<btleplug::Error> for Error {
 }
 
 fn main() -> anyhow::Result<()> {
-    let cmd = App::new("sensor-pollster")
-        .version("0.1")
+    let cmd = App::new(crate_name!())
+        .version(crate_version!())
         .author("Youmu")
         .about("Monitor temperatures of HM-11 sensors")
         .arg(
@@ -102,14 +102,15 @@ fn main() -> anyhow::Result<()> {
     .attach_context("failed to set up signal handlers")?;
 
     let result = runtime.block_on(async move {
-        let mut deadline = sleep(Duration::from_secs(30));
+        let deadline = sleep(Duration::from_secs(30));
+        tokio::pin!(deadline);
         let mut terminated = false;
         tokio::pin!(task_handle);
         loop {
             tokio::select! {
                 _ = termination_receiver.recv() => {
                     terminated = true;
-                    deadline.reset(Instant::now() + Duration::from_secs(5));
+                    deadline.as_mut().reset(Instant::now() + Duration::from_secs(5));
                 },
                 _ = &mut deadline, if terminated => {
                     warn!("tasks didn't terminate in time, force exit in 1s");

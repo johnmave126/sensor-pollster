@@ -6,10 +6,10 @@ use log::{debug, info};
 
 use tokio::{
     spawn,
-    stream::StreamExt,
     sync::{broadcast, mpsc},
 };
 use tokio_postgres::{connect, types::Type as SQLType, Client, NoTls, Statement};
+use tokio_stream::StreamExt;
 
 const TEMPERATURE_TNAME: &str = "temperature";
 const BATTERY_TNAME: &str = "battery";
@@ -37,8 +37,8 @@ async fn prepare_insert_sql(
 
 async fn transfer_to_db(
     client: Client,
-    source: mpsc::Receiver<UpdateMessage>,
-    termination_receiver: broadcast::Receiver<()>,
+    mut source: mpsc::Receiver<UpdateMessage>,
+    mut termination_receiver: broadcast::Receiver<()>,
 ) -> Result<(), Error> {
     client
         .batch_execute(&init_table_sql(TEMPERATURE_TNAME, "REAL"))
@@ -55,10 +55,18 @@ async fn transfer_to_db(
     let battery_sql = prepare_insert_sql(&client, BATTERY_TNAME, SQLType::INT2).await?;
     let rssi_sql = prepare_insert_sql(&client, RSSI_TNAME, SQLType::INT2).await?;
 
-    tokio::pin! {
-        let termination_receiver = termination_receiver.into_stream().take_while(Result::is_ok).map(|_| Message::Terminate).take(1);
-    }
-    let mut source = source.map(Message::Update).merge(termination_receiver);
+    let termination_receiver = async_stream::stream! {
+        if let Ok(_) = termination_receiver.recv().await {
+            yield Message::Terminate;
+        }
+    };
+    let source = async_stream::stream! {
+        while let Some(item) = source.recv().await {
+            yield item;
+        }
+    };
+    let source = source.map(Message::Update).merge(termination_receiver);
+    tokio::pin!(source);
     while let Some(message) = source.next().await {
         match message {
             Message::Update(message) => {
