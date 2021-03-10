@@ -10,7 +10,7 @@ use btleplug::api::{
     BDAddr, Central, CentralEvent, Characteristic, Peripheral, ValueNotification, WriteType,
 };
 #[cfg(target_os = "linux")]
-use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
+use btleplug::bluez::{adapter::Adapter, manager::Manager};
 #[cfg(target_os = "macos")]
 use btleplug::corebluetooth::{adapter::Adapter, manager::Manager};
 #[cfg(target_os = "windows")]
@@ -69,20 +69,15 @@ const UUID_NOTIFY: Uuid = Uuid::from_u128(0x0000ffe1_0000_1000_8000_00805f9b34fb
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn get_central(manager: &Manager) -> Result<Adapter, Error> {
     let adapters = manager.adapters()?;
-    adapters
-        .into_iter()
-        .nth(0)
-        .map_or(Err(Error::NoAdapter), Result::Ok)
+    adapters.into_iter().nth(0).ok_or(Error::NoAdapter)
 }
 
 #[cfg(target_os = "linux")]
-fn get_central(manager: &Manager) -> Result<ConnectedAdapter, Error> {
+fn get_central(manager: &Manager) -> Result<Adapter, Error> {
     let adapters = manager.adapters()?;
-    let adapter = adapters
-        .into_iter()
-        .nth(0)
-        .map_or(Err(Error::NoAdapter), Result::Ok)?;
-    Ok(adapter.connect()?)
+    let adapter = adapters.into_iter().nth(0).ok_or(Error::NoAdapter)?;
+    adapter.set_powered(true)?;
+    Ok(adapter)
 }
 
 fn setup_device<P: Peripheral + Display>(
