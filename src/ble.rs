@@ -255,7 +255,8 @@ async fn poll_ble_devices(
 
     let manager = Manager::new()?;
     let central = get_central(&manager)?;
-    central.active(false);
+    // https://github.com/deviceplug/btleplug/issues/122
+    //central.active(false);
     let ble_event_receiver = central.event_receiver().unwrap();
 
     let bus_sender_2 = bus_sender.clone();
