@@ -1,53 +1,25 @@
-mod ble;
 mod config;
-mod db;
+mod devices;
 mod message;
-mod util;
-use crate::config::Config;
-use crate::util::AttachContext;
+mod sensor_hub;
+mod sink;
 
 use std::{fs::File, io::BufReader};
 
 use anyhow::Context;
 use clap::{crate_name, crate_version, App, Arg};
-use futures::future::try_join;
+use futures::stream::{self, StreamExt, TryStreamExt};
 use indoc::indoc;
-use log::{error, info, warn};
-use thiserror::Error;
+use log::{debug, error, info, warn};
 use tokio::{
-    sync,
-    time::{sleep, Duration, Instant},
+    sync::mpsc,
+    time::{interval_at, sleep, Duration, Instant},
 };
 
-#[derive(Error, Debug)]
-enum Error {
-    #[error("{0}")]
-    Io(#[from] std::io::Error),
-    #[error("failed to parse config file: {0}")]
-    ConfigParse(#[from] serde_yaml::Error),
-    #[error("database error: {0}")]
-    Db(#[from] tokio_postgres::Error),
-    #[error("bluetooth error: {0}")]
-    Ble(btleplug::Error),
-    #[error("synchronization failed: {0}")]
-    Channel(#[from] sync::broadcast::error::RecvError),
-    #[error("cannot find bluetooth adapter")]
-    NoAdapter,
-    #[error("device is not a HM device")]
-    NotHMDevice,
-    #[error("device disconnects before performing operation")]
-    PreemptDisconnect,
-    #[error("syscall failed with: {0}")]
-    SysError(String),
-}
+use crate::{config::Config, sensor_hub::Error as HubError, sink::SinkConfig};
 
-impl From<btleplug::Error> for Error {
-    fn from(err: btleplug::Error) -> Error {
-        Error::Ble(err)
-    }
-}
-
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cmd = App::new(crate_name!())
         .version(crate_version!())
         .author("Youmu")
@@ -60,11 +32,6 @@ fn main() -> anyhow::Result<()> {
                 .long_help(indoc!(
                     "Sets custom config file location, default to read config.yaml
                     The custom config must be a file of YAML 1.2 format.
-                    The following configuration keys are supported:
-                    db_string: required, the connection string of the database
-                    poll_period: optional, default 300, polling period for sensors in seconds
-                    retry: optional, default 1, max number of retry when connection fails
-                    devices: required, a list of MAC addresses for the devices
                     "
                 ))
                 .value_name("FILE")
@@ -76,52 +43,101 @@ fn main() -> anyhow::Result<()> {
     let config_path = cmd.value_of("config").unwrap_or("config.yaml");
     info!("open and parse config file {}", config_path);
     let config_file =
-        File::open(config_path).context(format!("failed to open file {}", config_path))?;
+        File::open(config_path).with_context(|| format!("fail to open file {}", config_path))?;
     let config_reader = BufReader::new(config_file);
     let config: Config = serde_yaml::from_reader(config_reader)
-        .attach_context(format!("failed to parse config file {}", config_path))?;
+        .with_context(|| format!("fail to parse config file {}", config_path))?;
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
+    let mut repository = config
+        .device_repository
         .build()
-        .unwrap();
+        .await
+        .context("fail to connect to device repository database")?;
 
-    let (termination_sender, mut termination_receiver) = sync::broadcast::channel(1);
+    let (hub, backend) = sensor_hub::init().context("failed to initialize hub for sensors")?;
+    let backend_handle = std::thread::spawn(move || {
+        backend.serve();
+    });
 
-    let (ble_source, ble_handle) = ble::create_ble_source(&config, termination_sender.subscribe())?;
-    let db_handle = db::create_db_sink(
-        config.db_string.clone(),
-        ble_source,
-        termination_sender.subscribe(),
-    );
-    let task_handle = try_join(ble_handle, db_handle);
+    let mut sinks: Vec<_> = stream::iter(config.sinks.into_iter())
+        .then(SinkConfig::into_sink)
+        .try_collect()
+        .await
+        .context("fail to initialize data sink")?;
+
+    let mut interval = interval_at(Instant::now() + Duration::from_secs(5), config.interval);
+
+    let (tx, mut rx) = mpsc::channel(8);
     ctrlc::set_handler(move || {
-        info!("signal received, terminating...");
-        let _ = termination_sender.send(());
+        if tx.blocking_send(()).is_err() {
+            error!("fail to terminate gracefully");
+            std::process::abort();
+        }
     })
-    .attach_context("failed to set up signal handlers")?;
+    .context("fail to set signal trap")?;
 
-    let result = runtime.block_on(async move {
-        let deadline = sleep(Duration::from_secs(30));
-        tokio::pin!(deadline);
-        let mut terminated = false;
-        tokio::pin!(task_handle);
-        loop {
-            tokio::select! {
-                _ = termination_receiver.recv() => {
-                    terminated = true;
-                    deadline.as_mut().reset(Instant::now() + Duration::from_secs(5));
-                },
-                _ = &mut deadline, if terminated => {
-                    warn!("tasks didn't terminate in time, force exit in 1s");
-                    return Ok(());
-                },
-                r = &mut task_handle => {
-                    return Ok(r.map(|_| ())?);
-                },
+    'outer: loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                info!("start a polling round");
+                let devices = repository
+                    .retrieve()
+                    .await
+                    .context("fail to retrieve the list of devices")?;
+                for device in devices.into_iter() {
+                    debug!("poll device {} {}", device.name, device.address);
+                    let mut retry = config.retry + 1;
+                    let message = loop {
+                        match hub.poll(&device.address).await {
+                            Ok(message) => {
+                                break Some(message);
+                            }
+                            Err(HubError::DeviceNotFound) => {
+                                warn!("device {} {} not in range", device.name, device.address);
+                                break None;
+                            }
+                            Err(HubError::NotSupported) => {
+                                error!(
+                                    "device {} {} is not a valid sensor",
+                                    device.name, device.address
+                                );
+                                break None;
+                            }
+                            Err(HubError::BackendDead) => {
+                                error!("bluetooth backend is dead");
+                                break 'outer;
+                            }
+                            Err(e) if retry == 1 => {
+                                error!(
+                                    "fail to poll device `{} {}` after {} retries: {}",
+                                    device.name, device.address, config.retry, e
+                                );
+                            }
+                            _ => {
+                                sleep(Duration::from_millis(1007)).await;
+                            },
+                        }
+                        retry -= 1;
+                        if retry == 0 {
+                            break None;
+                        }
+                    };
+                    if let Some(message) = message {
+                        for sink in sinks.iter_mut() {
+                            if let Err(e) = sink.update(&message).await.context("fail to write to sink") {
+                                error!("{:?}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            _ = rx.recv() => {
+                break;
             }
         }
-    });
-    runtime.shutdown_timeout(Duration::from_secs(1));
-    result
+    }
+
+    drop(hub);
+    backend_handle.join().unwrap();
+    Ok(())
 }
