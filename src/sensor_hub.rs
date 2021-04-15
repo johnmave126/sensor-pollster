@@ -113,35 +113,32 @@ impl<P: Peripheral + Display> Sensor for DeviceWrapper<P> {
                 );
                 if let Some(s) = std::str::from_utf8(&notification.value)
                     .ok()
-                    .map(str::trim)
+                    .map(str::trim_start)
                     .and_then(|s| s.strip_prefix("OK+Get:"))
+                    .map(str::trim)
                 {
                     send.send(s.to_string()).ok();
                 }
             }));
 
         // Probe temperature
-        self.device
-            .write(&service, "AT+TEMP?".as_bytes(), WriteType::WithoutResponse)
-            .map_err(|e| Error::Other(e, "sending AT commands", self.device.to_string()))?;
-
-        let response = recv
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| Error::RequestTimeout(self.device.to_string()))?;
-
-        let temperature: Result<f32, _> = if &response == "085.00" {
-            debug!("temperature sensor of {} not initialized yet", self.device);
+        let temperature = loop {
             self.device
                 .write(&service, "AT+TEMP?".as_bytes(), WriteType::WithoutResponse)
                 .map_err(|e| Error::Other(e, "sending AT commands", self.device.to_string()))?;
-            recv.recv_timeout(Duration::from_secs(1))
-                .map_err(|_| Error::RequestTimeout(self.device.to_string()))?
-                .parse()
-        } else {
-            response.parse()
+
+            let response = recv
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| Error::RequestTimeout(self.device.to_string()))?;
+
+            if &response != "085.00" {
+                break response
+                    .parse()
+                    .map_err(|_| Error::InvalidResponse("AT+TEMP?", self.device.to_string()))?;
+            }
+
+            std::thread::sleep(Duration::from_millis(50));
         };
-        let temperature =
-            temperature.map_err(|_| Error::InvalidResponse("AT+TEMP?", self.device.to_string()))?;
 
         // Probe battery
         self.device
