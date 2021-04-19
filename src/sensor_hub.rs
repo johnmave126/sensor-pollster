@@ -151,14 +151,7 @@ impl<P: Peripheral + Display> Sensor for DeviceWrapper<P> {
             .map_err(|_| Error::InvalidResponse("AT+BATT?", self.device.to_string()))?;
 
         // Probe rssi
-        self.device
-            .write(&service, "AT+RSSI?".as_bytes(), WriteType::WithoutResponse)
-            .map_err(|e| Error::Other(e, "sending AT commands", self.device.to_string()))?;
-        let rssi: i16 = recv
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| Error::RequestTimeout(self.device.to_string()))?
-            .parse()
-            .map_err(|_| Error::InvalidResponse("AT+RSSI?", self.device.to_string()))?;
+        let rssi = self.device.properties().tx_power_level.unwrap_or(-128) as i16;
 
         info!("polled device {}", self.device);
 
